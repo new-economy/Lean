@@ -984,6 +984,12 @@ namespace QuantConnect
             return new OrderTicket(transactionManager, submitOrderRequest);
         }
 
+        /// <summary>
+        /// Continues to consume the collection until it is empty.
+        /// </summary>
+        /// <typeparam name="T">The item type</typeparam>
+        /// <param name="collection">The producer-consumer collection</param>
+        /// <param name="handler">Invoked for each item in the collection</param>
         public static void ProcessUntilEmpty<T>(this IProducerConsumerCollection<T> collection, Action<T> handler)
         {
             T item;

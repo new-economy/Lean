@@ -24,12 +24,6 @@ using QuantConnect.Orders;
 
 namespace QuantConnect.Algorithm.CSharp
 {
-    /// <summary>
-    /// Basic template framework algorithm uses framework components to define the algorithm.
-    /// </summary>
-    /// <meta name="tag" content="using data" />
-    /// <meta name="tag" content="using quantconnect" />
-    /// <meta name="tag" content="trading and orders" />
     public class BasicTemplateFrameworkAlgorithm : QCAlgorithmFramework
     {
         /// <summary>
@@ -38,16 +32,11 @@ namespace QuantConnect.Algorithm.CSharp
         public override void Initialize()
         {
             // Set requested data resolution
-            UniverseSettings.Resolution = Resolution.Minute;
+            UniverseSettings.Resolution = Resolution.Second;
 
-            SetStartDate(2013, 10, 07);  //Set Start Date
-            SetEndDate(2013, 10, 11);    //Set End Date
+            SetStartDate(2017, 11, 1);  //Set Start Date
+            SetEndDate(2017, 12, 31);    //Set End Date
             SetCash(100000);             //Set Strategy Cash
-
-            // Find more symbols here: http://quantconnect.com/data
-            // Forex, CFD, Equities Resolutions: Tick, Second, Minute, Hour, Daily.
-            // Futures Resolution: Tick, Second, Minute
-            // Options Resolution: Minute Only.
 
             // set algorithm framework models
             PortfolioSelection = new ManualPortfolioSelectionModel(QuantConnect.Symbol.Create("SPY", SecurityType.Equity, Market.USA));

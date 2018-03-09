@@ -46,14 +46,14 @@ namespace QuantConnect.Algorithm.Framework.Alphas.Analysis
         private readonly List<IInsightManagerExtension> _extensions;
         private readonly IInsightScoreFunctionProvider _scoreFunctionProvider;
 
-        private readonly HashSet<InsightAnalysisContext> _updatedInsightContexts;
-        private readonly HashSet<InsightAnalysisContext> _openInsightContexts;
+        private readonly Dictionary<Guid, InsightAnalysisContext> _updatedInsightContexts;
+        private readonly Dictionary<Guid, InsightAnalysisContext> _openInsightContexts;
         private readonly ConcurrentDictionary<Guid, InsightAnalysisContext> _closedInsightContexts;
 
         /// <summary>
         /// Enumerable of insights still under analysis
         /// </summary>
-        public IEnumerable<Insight> OpenInsights => _openInsightContexts.Select(context => context.Insight);
+        public IEnumerable<Insight> OpenInsights => _openInsightContexts.Select(kvp => kvp.Value.Insight);
 
         /// <summary>
         /// Enumerable of insights who's analysis has been completed
@@ -70,8 +70,8 @@ namespace QuantConnect.Algorithm.Framework.Alphas.Analysis
         /// </summary>
         /// <param name="frontierTimeUtc"></param>
         /// <returns></returns>
-        public IEnumerable<InsightAnalysisContext> ContextsOpenAt(DateTime frontierTimeUtc) =>
-            _openInsightContexts.Where(context => context.AnalysisEndTimeUtc <= frontierTimeUtc);
+        public IEnumerable<InsightAnalysisContext> ContextsOpenAt(DateTime frontierTimeUtc) => _openInsightContexts.Values
+            .Where(context => context.AnalysisEndTimeUtc <= frontierTimeUtc);
 
         /// <summary>
         /// Initializes a new instance of the <see cref="InsightManager"/> class
@@ -90,8 +90,8 @@ namespace QuantConnect.Algorithm.Framework.Alphas.Analysis
             _extraAnalysisPeriodRatio = extraAnalysisPeriodRatio;
             _extensions = extensions?.ToList() ?? new List<IInsightManagerExtension>();
 
-            _openInsightContexts = new HashSet<InsightAnalysisContext>();
-            _updatedInsightContexts = new HashSet<InsightAnalysisContext>();
+            _openInsightContexts = new Dictionary<Guid, InsightAnalysisContext>();
+            _updatedInsightContexts = new Dictionary<Guid, InsightAnalysisContext>();
             _closedInsightContexts = new ConcurrentDictionary<Guid, InsightAnalysisContext>();
         }
 
@@ -136,7 +136,7 @@ namespace QuantConnect.Algorithm.Framework.Alphas.Analysis
 
                     // set this as an open analysis context
                     var context = new InsightAnalysisContext(insight, initialValues, analysisPeriod);
-                    _openInsightContexts.Add(context);
+                    _openInsightContexts.Add(insight.Id, context);
 
                     // let everyone know we've received an insight
                     _extensions.ForEach(e => e.OnInsightGenerated(context));
@@ -172,7 +172,7 @@ namespace QuantConnect.Algorithm.Framework.Alphas.Analysis
         /// <returns></returns>
         public IEnumerable<InsightAnalysisContext> GetUpdatedContexts()
         {
-            var copy = _updatedInsightContexts.ToList();
+            var copy = _updatedInsightContexts.Values.ToList();
             _updatedInsightContexts.Clear();
             return copy;
         }
@@ -182,9 +182,11 @@ namespace QuantConnect.Algorithm.Framework.Alphas.Analysis
         /// </summary>
         private void UpdateScores(ReadOnlySecurityValuesCollection securityValuesCollection)
         {
-            var removals = new HashSet<InsightAnalysisContext>();
-            foreach (var context in _openInsightContexts)
+            var removals = new List<InsightAnalysisContext>();
+            foreach (var kvp in _openInsightContexts)
             {
+                var context = kvp.Value;
+
                 // was this insight period closed before we update the times?
                 var previouslyClosed = context.InsightPeriodClosed;
 
@@ -197,7 +199,7 @@ namespace QuantConnect.Algorithm.Framework.Alphas.Analysis
                 {
                     if (!context.ShouldAnalyze(scoreType))
                     {
-                        // not all insights can receive every score type, for example, insight.Magnitude==null, not point in doing magnitude scoring
+                        // not all insights can receive every score type, for example, insight.Magnitude==null, no point in doing magnitude scoring
                         continue;
                     }
 
@@ -227,10 +229,17 @@ namespace QuantConnect.Algorithm.Framework.Alphas.Analysis
                 }
 
                 // mark the context as having been updated
-                _updatedInsightContexts.Add(context);
+                _updatedInsightContexts[context.Id] = context;
             }
 
-            _openInsightContexts.RemoveWhere(removals.Contains);
+            if (removals.Count > 0)
+            {
+                // remove from dictionary outside of loop to prevent mutated enumeration
+                foreach (var context in removals)
+                {
+                    _openInsightContexts.Remove(context.Id);
+                }
+            }
         }
     }
 }

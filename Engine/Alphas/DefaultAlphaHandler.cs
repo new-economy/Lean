@@ -28,6 +28,7 @@ using QuantConnect.Interfaces;
 using QuantConnect.Lean.Engine.Alpha;
 using QuantConnect.Logging;
 using QuantConnect.Packets;
+using QuantConnect.Util;
 
 namespace QuantConnect.Lean.Engine.Alphas
 {
@@ -45,6 +46,7 @@ namespace QuantConnect.Lean.Engine.Alphas
         private ChartingInsightManagerExtension _charting;
         private ISecurityValuesProvider _securityValuesProvider;
         private CancellationTokenSource _cancellationTokenSource;
+
         private readonly ConcurrentQueue<Packet> _messages = new ConcurrentQueue<Packet>();
         private readonly ConcurrentQueue<InsightQueueItem> _insightQueue = new ConcurrentQueue<InsightQueueItem>();
 
@@ -112,7 +114,6 @@ namespace QuantConnect.Lean.Engine.Alphas
                 return;
             }
 
-
             _securityValuesProvider = new AlgorithmSecurityValuesProvider(algorithm);
 
             InsightManager = CreateInsightManager();
@@ -174,6 +175,10 @@ namespace QuantConnect.Lean.Engine.Alphas
             IsActive = true;
             _cancellationTokenSource = new CancellationTokenSource();
 
+            // give alpha analysis its own thread so its not blocked by the message handler
+            var insightAnalysisThread = new Thread(RunInsightAnalysis) {Name = "InsightAnalysis"};
+            insightAnalysisThread.Start();
+
             // run main loop until canceled, will clean out work queues separately
             while (!_cancellationTokenSource.IsCancellationRequested)
             {
@@ -190,8 +195,8 @@ namespace QuantConnect.Lean.Engine.Alphas
                 Thread.Sleep(1);
             }
 
-            // finish insight scoring analysis
-            _insightQueue.ProcessUntilEmpty(item => InsightManager.Step(item.FrontierTimeUtc, item.SecurityValues, item.GeneratedInsights));
+            // wait until insight analysis is complete
+            insightAnalysisThread.Join();
 
             // send final insight scoring updates before we exit
             var insights = InsightManager.GetUpdatedContexts().Select(context => context.Insight).ToList();
@@ -205,6 +210,39 @@ namespace QuantConnect.Lean.Engine.Alphas
 
             Log.Trace("DefaultAlphaHandler.Run(): Ending Thread...");
             IsActive = false;
+        }
+
+        /// <summary>
+        /// Insight analysis thread entry point
+        /// </summary>
+        protected void RunInsightAnalysis()
+        {
+            InsightQueueItem item;
+            while (!_cancellationTokenSource.IsCancellationRequested)
+            {
+                try
+                {
+                    // step the insight manager forward in time
+                    while (_insightQueue.TryDequeue(out item))
+                    {
+                        InsightManager.Step(item.FrontierTimeUtc, item.SecurityValues, item.GeneratedInsights);
+                    }
+
+                    // no message in queue, sleep
+                    Thread.Sleep(1);
+                }
+                catch (Exception err)
+                {
+                    Log.Error(err);
+                    throw;
+                }
+            }
+
+            // clear out any remaining items
+            while (_insightQueue.TryDequeue(out item))
+            {
+                InsightManager.Step(item.FrontierTimeUtc, item.SecurityValues, item.GeneratedInsights);
+            }
         }
 
         /// <summary>
@@ -227,13 +265,6 @@ namespace QuantConnect.Lean.Engine.Alphas
         /// </summary>
         protected void ProcessAsynchronousEvents()
         {
-            // step the insight manager forward in time
-            InsightQueueItem item;
-            while (_insightQueue.TryDequeue(out item))
-            {
-                InsightManager.Step(item.FrontierTimeUtc, item.SecurityValues, item.GeneratedInsights);
-            }
-
             // send insight upate messages
             Packet packet;
             while (_messages.TryDequeue(out packet))

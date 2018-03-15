@@ -45,6 +45,68 @@ namespace QuantConnect.Algorithm
         }
 
         /// <summary>
+        /// Invoked at the end of every time step. This allows the algorithm
+        /// to process events before advancing to the next time step.
+        /// </summary>
+        public void OnEndOfTimeStep()
+        {
+            // rewrite securities w/ derivatives to be in raw mode
+            lock (_pendingUniverseAdditionsLock)
+            {
+                foreach (var security in Securities.Select(kvp => kvp.Value).Concat(_pendingUserDefinedUniverseSecurityAdditions.Keys))
+                {
+                    // check for any derivative securities and mark the underlying as raw
+                    if (Securities.Any(skvp => skvp.Key.HasUnderlyingSymbol(security.Symbol)))
+                    {
+                        // set data mode raw and default volatility model
+                        ConfigureUnderlyingSecurity(security);
+                    }
+
+                    if (security.Symbol.HasUnderlying)
+                    {
+                        Security underlyingSecurity;
+                        var underlyingSymbol = security.Symbol.Underlying;
+
+                        // create the underlying security object if it doesn't already exist
+                        if (!Securities.TryGetValue(underlyingSymbol, out underlyingSecurity))
+                        {
+                            underlyingSecurity = AddSecurity(underlyingSymbol.SecurityType, underlyingSymbol.Value, security.Resolution,
+                                underlyingSymbol.ID.Market, false, 0, security.IsExtendedMarketHours);
+                        }
+
+                        // set data mode raw and default volatility model
+                        ConfigureUnderlyingSecurity(underlyingSecurity);
+
+                        // set the underying security on the derivative -- we do this in two places since it's possible
+                        // to do AddOptionContract w/out the underlying already added and normalized properly
+                        var derivative = security as IDerivativeSecurity;
+                        if (derivative != null)
+                        {
+                            derivative.Underlying = underlyingSecurity;
+                        }
+                    }
+                }
+
+                // add securities to their respective user defined universes
+                foreach (var kvp in _pendingUserDefinedUniverseSecurityAdditions)
+                {
+                    var security = kvp.Key;
+                    var userDefinedUniverse = kvp.Value;
+                    userDefinedUniverse.Add(security.Symbol);
+                }
+
+                // finally add any pending universes, this will make them available to the data feed
+                foreach (var universe in _pendingUnivereAdditions)
+                {
+                    UniverseManager.Add(universe.Configuration.Symbol, universe);
+                }
+
+                _pendingUnivereAdditions.Clear();
+                _pendingUserDefinedUniverseSecurityAdditions.Clear();
+            }
+        }
+
+        /// <summary>
         /// Gets a helper that provides pre-defined universe defintions, such as top dollar volume
         /// </summary>
         public UniverseDefinitions Universe
@@ -375,6 +437,26 @@ namespace QuantConnect.Algorithm
             {
                 // should never happen, someone would need to add a non-user defined universe with this symbol
                 throw new Exception("Expected universe with symbol '" + universeSymbol.Value + "' to be of type UserDefinedUniverse.");
+            }
+        }
+
+        /// <summary>
+        /// Configures the security to be in raw data mode and ensures that a reasonable default volatility model is supplied
+        /// </summary>
+        /// <param name="security">The underlying security</param>
+        private void ConfigureUnderlyingSecurity(Security security)
+        {
+            // force underlying securities to be raw data mode
+            if (security.DataNormalizationMode != DataNormalizationMode.Raw)
+            {
+                Debug($"Warning: The {security.Symbol.Value} equity security was set the raw price normalization mode to work with options.");
+                security.SetDataNormalizationMode(DataNormalizationMode.Raw);
+            }
+
+            // ensure a volatility model has been set on the underlying
+            if (security.VolatilityModel == VolatilityModel.Null)
+            {
+                security.VolatilityModel = new StandardDeviationOfReturnsVolatilityModel(periods: 30);
             }
         }
     }

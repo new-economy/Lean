@@ -28,6 +28,12 @@ namespace QuantConnect.Securities
     /// </summary>
     public class UniverseManager : IDictionary<Symbol, Universe>, INotifyCollectionChanged
     {
+        // save universe additions and apply at end of time step
+        // this removes temporal dependencies from w/in initialize method
+        // original motivation: adding equity/options to enforce equity raw data mode
+        private readonly object _pendingUniverseAdditionsLock = new object();
+        private readonly HashSet<Universe> _pendingUnivereAdditions = new HashSet<Universe>();
+
         private readonly ConcurrentDictionary<Symbol, Universe> _universes;
 
         /// <summary>
@@ -41,6 +47,25 @@ namespace QuantConnect.Securities
         public UniverseManager()
         {
             _universes = new ConcurrentDictionary<Symbol, Universe>();
+        }
+
+        public bool HasPendingAdditions { get; private set; }
+
+        /// <summary>
+        /// Applies pending universe additions. This will fire an event that notifies the data feed these are ready to be processed
+        /// </summary>
+        public void ProcessPendingAdditions()
+        {
+            lock (_pendingUniverseAdditionsLock)
+            {
+                foreach (var universe in _pendingUnivereAdditions)
+                {
+                    if (_universes.TryAdd(universe.Configuration.Symbol, universe))
+                    {
+                        OnCollectionChanged(new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Add, universe));
+                    }
+                }
+            }
         }
 
         #region IDictionary implementation
@@ -85,6 +110,11 @@ namespace QuantConnect.Securities
         public void Clear()
         {
             _universes.Clear();
+
+            lock (_pendingUniverseAdditionsLock)
+            {
+                _pendingUnivereAdditions.Clear();
+            }
         }
 
         /// <summary>
@@ -96,7 +126,7 @@ namespace QuantConnect.Securities
         /// <param name="item">The object to locate in the <see cref="T:System.Collections.Generic.ICollection`1"/>.</param>
         public bool Contains(KeyValuePair<Symbol, Universe> item)
         {
-            return _universes.Contains(item);
+            return _universes.Contains(item) || _pendingUnivereAdditions.Contains(item.Value);
         }
 
         /// <summary>
@@ -118,7 +148,12 @@ namespace QuantConnect.Securities
         public bool Remove(KeyValuePair<Symbol, Universe> item)
         {
             Universe universe;
-            return _universes.TryRemove(item.Key, out universe);
+            if (_universes.TryRemove(item.Key, out universe))
+            {
+                return true;
+            }
+
+            return _pendingUnivereAdditions.Remove(item.Value);
         }
 
         /// <summary>
@@ -127,7 +162,7 @@ namespace QuantConnect.Securities
         /// <returns>
         /// The number of elements contained in the <see cref="T:System.Collections.Generic.ICollection`1"/>.
         /// </returns>
-        public int Count => _universes.Skip(0).Count();
+        public int Count => _universes.Skip(0).Count() + _pendingUnivereAdditions.Count;
 
         /// <summary>
         /// Gets a value indicating whether the <see cref="T:System.Collections.Generic.ICollection`1"/> is read-only.
@@ -149,7 +184,8 @@ namespace QuantConnect.Securities
         /// <param name="key">The key to locate in the <see cref="T:System.Collections.Generic.IDictionary`2"/>.</param><exception cref="T:System.ArgumentNullException"><paramref name="key"/> is null.</exception>
         public bool ContainsKey(Symbol key)
         {
-            return _universes.ContainsKey(key);
+            Universe universe;
+            return TryGetValue(key, out universe);
         }
 
         /// <summary>
@@ -158,9 +194,10 @@ namespace QuantConnect.Securities
         /// <param name="key">The object to use as the key of the element to add.</param><param name="universe">The object to use as the value of the element to add.</param><exception cref="T:System.ArgumentNullException"><paramref name="key"/> is null.</exception><exception cref="T:System.ArgumentException">An element with the same key already exists in the <see cref="T:System.Collections.Generic.IDictionary`2"/>.</exception><exception cref="T:System.NotSupportedException">The <see cref="T:System.Collections.Generic.IDictionary`2"/> is read-only.</exception>
         public void Add(Symbol key, Universe universe)
         {
-            if (_universes.TryAdd(key, universe))
+            lock (_pendingUniverseAdditionsLock)
             {
-                OnCollectionChanged(new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Add, universe));
+                _pendingUnivereAdditions.Add(universe);
+                HasPendingAdditions = true;
             }
         }
 
@@ -179,6 +216,14 @@ namespace QuantConnect.Securities
                 OnCollectionChanged(new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Remove, universe));
                 return true;
             }
+
+            // also check pending additions
+            universe = _pendingUnivereAdditions.FirstOrDefault(u => u.Configuration.Symbol == key);
+            if (universe != null)
+            {
+                return _pendingUnivereAdditions.Remove(universe);
+            }
+
             return false;
         }
 
@@ -191,7 +236,16 @@ namespace QuantConnect.Securities
         /// <param name="key">The key whose value to get.</param><param name="value">When this method returns, the value associated with the specified key, if the key is found; otherwise, the default value for the type of the <paramref name="value"/> parameter. This parameter is passed uninitialized.</param><exception cref="T:System.ArgumentNullException"><paramref name="key"/> is null.</exception>
         public bool TryGetValue(Symbol key, out Universe value)
         {
-            return _universes.TryGetValue(key, out value);
+            if (_universes.TryGetValue(key, out value))
+            {
+                return true;
+            }
+
+            lock (_pendingUniverseAdditionsLock)
+            {
+                value = _pendingUnivereAdditions.FirstOrDefault(u => u.Configuration.Symbol == key);
+                return value != null;
+            }
         }
 
         /// <summary>
@@ -205,16 +259,18 @@ namespace QuantConnect.Securities
         {
             get
             {
-                if (!_universes.ContainsKey(symbol))
+                Universe universe;
+                if (!TryGetValue(symbol, out universe))
                 {
                     throw new Exception(string.Format("This universe symbol ({0}) was not found in your universe list. Please add this security or check it exists before using it with 'Universes.ContainsKey(\"{1}\")'", symbol, SymbolCache.GetTicker(symbol)));
                 }
-                return _universes[symbol];
+
+                return universe;
             }
             set
             {
                 Universe existing;
-                if (_universes.TryGetValue(symbol, out existing) && existing != value)
+                if (_universes.TryGetValue(symbol, out existing) && existing != value || _pendingUnivereAdditions.Any(u => u.Configuration.Symbol == symbol))
                 {
                     throw new ArgumentException("Unable to over write existing Universe: " + symbol.Value);
                 }
@@ -233,7 +289,7 @@ namespace QuantConnect.Securities
         /// <returns>
         /// An <see cref="T:System.Collections.Generic.ICollection`1"/> containing the keys of the object that implements <see cref="T:System.Collections.Generic.IDictionary`2"/>.
         /// </returns>
-        public ICollection<Symbol> Keys => _universes.Select(x => x.Key).ToList();
+        public ICollection<Symbol> Keys => _universes.Select(x => x.Key).Union(_pendingUnivereAdditions.Select(u => u.Configuration.Symbol)).ToList();
 
         /// <summary>
         /// Gets an <see cref="T:System.Collections.Generic.ICollection`1"/> containing the values in the <see cref="T:System.Collections.Generic.IDictionary`2"/>.
@@ -241,7 +297,7 @@ namespace QuantConnect.Securities
         /// <returns>
         /// An <see cref="T:System.Collections.Generic.ICollection`1"/> containing the values in the object that implements <see cref="T:System.Collections.Generic.IDictionary`2"/>.
         /// </returns>
-        public ICollection<Universe> Values => _universes.Select(x => x.Value).ToList();
+        public ICollection<Universe> Values => _universes.Select(x => x.Value).Concat(_pendingUnivereAdditions).ToList();
 
         #endregion
 

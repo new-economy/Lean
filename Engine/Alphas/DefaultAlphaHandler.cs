@@ -20,6 +20,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading;
+using System.Threading.Tasks;
 using Newtonsoft.Json;
 using QuantConnect.Algorithm.Framework.Alphas;
 using QuantConnect.Algorithm.Framework.Alphas.Analysis;
@@ -217,9 +218,9 @@ namespace QuantConnect.Lean.Engine.Alphas
                 return;
             }
 
-            Log.Trace($"DefaultAlphaHandler.Run(): Remaining InsightManager steps: {_insightQueue.Count}");
-            Log.Trace($"DefaultAlphaHandler.Run(): Remaining Messages: {_messages.Count}");
-            Log.Trace("DefaultAlphaHandler.Run(): Exiting Thread...");
+            Log.Trace($"DefaultAlphaHandler.Exit(): Remaining InsightManager steps: {_insightQueue.Count}");
+            Log.Trace($"DefaultAlphaHandler.Exit(): Remaining Messages: {_messages.Count}");
+            Log.Trace("DefaultAlphaHandler.Exit(): Exiting Thread...");
 
             _cancellationTokenSource.Cancel(false);
         }
@@ -236,17 +237,20 @@ namespace QuantConnect.Lean.Engine.Alphas
                 InsightManager.Step(item.FrontierTimeUtc, item.SecurityValues, item.GeneratedInsights);
             }
 
-            // send insight upate messages
-            Packet packet;
-            while (_messages.TryDequeue(out packet))
+            // send insight upate messages in a separate thread
+            Task.Run(() =>
             {
-                _messagingHandler.Send(packet);
-            }
+                Packet packet;
+                while (_messages.TryDequeue(out packet))
+                {
+                    _messagingHandler.Send(packet);
+                }
+            });
 
-            // persist generated insights to storage
+            // persist generated insights to storage in a separate thread
             if (DateTime.UtcNow > _nextPersistenceUpdate)
             {
-                StoreInsights();
+                Task.Run(() => StoreInsights());
                 _nextPersistenceUpdate = DateTime.UtcNow + PersistenceUpdateInterval;
             }
 

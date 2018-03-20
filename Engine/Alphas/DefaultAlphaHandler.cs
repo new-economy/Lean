@@ -178,36 +178,40 @@ namespace QuantConnect.Lean.Engine.Alphas
         /// </summary>
         public virtual void Run()
         {
-            if (_isNotFrameworkAlgorithm)
-            {
-                return;
-            }
-
-            IsActive = true;
-            _cancellationTokenSource = new CancellationTokenSource();
-
-            // run main loop until canceled insight manager done scoring
-            while (!_cancellationTokenSource.IsCancellationRequested || !_insightQueue.IsEmpty)
-            {
-                try
-                {
-                    ProcessAsynchronousEvents();
-                }
-                catch (Exception err)
-                {
-                    Log.Error(err);
-                    throw;
-                }
-
-                Thread.Sleep(1);
-            }
 
             try
             {
-                Log.Trace("DefaultAlphaHandler.Run(): Finalization Started");
+                if (_isNotFrameworkAlgorithm)
+                {
+                    return;
+                }
+
+                IsActive = true;
+                _cancellationTokenSource = new CancellationTokenSource();
+
+                // run main loop until canceled insight manager done scoring
+                while (!_cancellationTokenSource.IsCancellationRequested || !_insightQueue.IsEmpty)
+                {
+                    try
+                    {
+                        ProcessAsynchronousEvents();
+                    }
+                    catch (Exception err)
+                    {
+                        Log.Error(err);
+                        throw;
+                    }
+
+                    Thread.Sleep(1);
+                }
+
+                Log.Trace("DefaultAlphaHandler.Run(): Finalization Started. Insight steps remaining: " + _insightQueue.Count);
 
                 // finish insight scoring analysis
                 _insightQueue.ProcessUntilEmpty(item => InsightManager.Step(item.FrontierTimeUtc, item.SecurityValues, item.GeneratedInsights));
+
+                // persist insights at exit
+                StoreInsights();
 
                 // send final insight scoring updates before we exit
                 var insights = InsightManager.GetUpdatedContexts().Select(context => context.Insight).ToList();
@@ -215,9 +219,6 @@ namespace QuantConnect.Lean.Engine.Alphas
 
                 // finish sending packets
                 _messages.ProcessUntilEmpty(packet => _messagingHandler.Send(packet));
-
-                // persist insights at exit
-                StoreInsights();
 
                 Log.Trace("DefaultAlphaHandler.Run(): Ending Thread...");
                 IsActive = false;

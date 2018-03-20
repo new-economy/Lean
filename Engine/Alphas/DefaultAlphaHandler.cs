@@ -217,6 +217,8 @@ namespace QuantConnect.Lean.Engine.Alphas
                 return;
             }
 
+            Log.Trace($"DefaultAlphaHandler.Run(): Remaining InsightManager steps: {_insightQueue.Count}");
+            Log.Trace($"DefaultAlphaHandler.Run(): Remaining Messages: {_messages.Count}");
             Log.Trace("DefaultAlphaHandler.Run(): Exiting Thread...");
 
             _cancellationTokenSource.Cancel(false);

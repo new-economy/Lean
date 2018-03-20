@@ -254,7 +254,7 @@ namespace QuantConnect.Lean.Engine.Alphas
         /// </summary>
         protected void ProcessAsynchronousEvents()
         {
-            Log.Trace("DefaultAlphaHandler.ProcessAsynchronousEvents Started w/ Insight Steps: " + _insightQueue.Count);
+            Log.Trace($"DefaultAlphaHandler.ProcessAsynchronousEvents {Algorithm.Time} Started w/ Insight Steps: {_insightQueue.Count}");
             // step the insight manager forward in time
             InsightQueueItem item;
             while (_insightQueue.TryDequeue(out item))
@@ -293,7 +293,7 @@ namespace QuantConnect.Lean.Engine.Alphas
             //    }
             //    _nextMessagingUpdate = DateTime.UtcNow + MessagingUpdateInterval;
             //}
-            Log.Trace("DefaultAlphaHandler.ProcessAsynchronousEvents Finished. Remaining Insight Steps: " + _insightQueue.Count);
+            Log.Trace($"DefaultAlphaHandler.ProcessAsynchronousEvents Finished. {Algorithm.Time} Remaining Insight Steps: {_insightQueue.Count}");
         }
 
         /// <summary>

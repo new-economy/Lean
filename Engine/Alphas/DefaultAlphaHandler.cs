@@ -82,12 +82,12 @@ namespace QuantConnect.Lean.Engine.Alphas
         /// <summary>
         /// Gets or sets the interval at which the insights are persisted
         /// </summary>
-        protected TimeSpan PersistenceUpdateInterval { get; set; } = TimeSpan.FromMinutes(1);
+        protected TimeSpan PersistenceUpdateInterval { get; set; } = TimeSpan.FromMinutes(2);
 
         /// <summary>
         /// Gets or sets the interval at which insight updates are sent to the messaging handler
         /// </summary>
-        protected TimeSpan MessagingUpdateInterval { get; set; } = TimeSpan.FromSeconds(2);
+        protected TimeSpan MessagingUpdateInterval { get; set; } = TimeSpan.FromSeconds(30);
 
         /// <summary>
         /// Gets the insight manager instance used to manage the analysis of algorithm insights
@@ -125,14 +125,7 @@ namespace QuantConnect.Lean.Engine.Alphas
             InsightManager.AddExtension(_charting);
 
             // when insight is generated, take snapshot of securities and place in queue for insight manager to process on alpha thread
-            algorithm.InsightsGenerated += (algo, collection) =>
-            {
-                _insightQueue.Enqueue(new InsightQueueItem(collection.DateTimeUtc, CreateSecurityValuesSnapshot(), collection));
-                if (_insightQueue.Count > 1000)
-                {
-                    Log.Trace($"DefaultAlphaHandler.InsightsGenerated(): Insight queue length {_insightQueue.Count} at {Algorithm.Time}");
-                }
-            };
+            algorithm.InsightsGenerated += (algo, collection) => _insightQueue.Enqueue(new InsightQueueItem(collection.DateTimeUtc, CreateSecurityValuesSnapshot(), collection));
         }
 
         /// <summary>
@@ -166,10 +159,6 @@ namespace QuantConnect.Lean.Engine.Alphas
             if (_lastSecurityValuesSnapshotTime < Algorithm.UtcTime)
             {
                 _insightQueue.Enqueue(new InsightQueueItem(Algorithm.UtcTime, CreateSecurityValuesSnapshot()));
-                if (_insightQueue.Count > 1000)
-                {
-                    Log.Trace($"DefaultAlphaHandler.ProcessSynchronousEvents(): Insight queue length {_insightQueue.Count} at {Algorithm.Time}");
-                }
             }
         }
 
@@ -202,7 +191,11 @@ namespace QuantConnect.Lean.Engine.Alphas
                         throw;
                     }
 
-                    Thread.Sleep(1);
+                    // don't sleep if there's still work to be dne
+                    if (_insightQueue.IsEmpty)
+                    {
+                        Thread.Sleep(1);
+                    }
                 }
 
                 Log.Trace("DefaultAlphaHandler.Run(): Finalization Started. Insight steps remaining: " + _insightQueue.Count);
@@ -211,28 +204,46 @@ namespace QuantConnect.Lean.Engine.Alphas
                 _insightQueue.ProcessUntilEmpty(item => InsightManager.Step(item.FrontierTimeUtc, item.SecurityValues, item.GeneratedInsights));
 
                 // persist insights at exit
-                var storeTask = Task.Run(() => StoreInsights());
+                var storeTask = new Task(StoreInsights, TaskCreationOptions.LongRunning);
+                storeTask.Start();
+                var tasks = new List<Task>{storeTask};
 
-                var messageTask = Task.Run(() =>
+                // send final insight scoring updates before we exit
+                var insights = InsightManager.GetUpdatedContexts().Select(context => context.Insight).ToList();
+                _messages.Enqueue(new AlphaResultPacket(AlgorithmId, Job.UserId, insights));
+
+                // finish sending packets
+                Packet packet;
+                var packets = new List<Packet>();
+                while (_messages.TryDequeue(out packet))
                 {
-                    // send final insight scoring updates before we exit
-                    var insights = InsightManager.GetUpdatedContexts().Select(context => context.Insight).ToList();
-                    _messages.Enqueue(new AlphaResultPacket(AlgorithmId, Job.UserId, insights));
+                    packets.Add(packet);
+                }
 
-                    // finish sending packets
-                    _messages.ProcessUntilEmpty(packet => _messagingHandler.Send(packet));
-                });
+                if (packets.Count > 0)
+                {
+                    // to save time, send each method in parallel tasks
+                    tasks.AddRange(packets.Select(p =>
+                    {
+                        // specifying long running ensures we don't clog the thread pool threads since
+                        // these may take on the order of seconds to send
+                        var task = new Task(() => _messagingHandler.Send(p), TaskCreationOptions.LongRunning);
+                        task.Start();
+                        return task;
+                    }));
+                }
 
-                Task.WaitAll(storeTask, messageTask);
+                // wait for generated tasks to return
+                Task.WaitAll(tasks.ToArray());
 
                 Log.Trace("DefaultAlphaHandler.Run(): Ending Thread...");
                 IsActive = false;
             }
-            catch (Exception err)
+            catch (Exception)
             {
-                Log.Error(err, $"DefaultAlphaHandler.Run(): Remaining InsightManager steps: {_insightQueue.Count}");
-                Log.Error(err, $"DefaultAlphaHandler.Run(): Remaining Messages: {_messages.Count}");
-                Log.Error(err, "DefaultAlphaHandler.Run(): Exiting Thread...");
+                Log.Trace($"DefaultAlphaHandler.Run(): Remaining InsightManager steps: {_insightQueue.Count}");
+                Log.Trace($"DefaultAlphaHandler.Run(): Remaining Messages: {_messages.Count}");
+                Log.Trace("DefaultAlphaHandler.Run(): Forcefully Exiting Thread...");
                 throw;
             }
         }
@@ -259,7 +270,6 @@ namespace QuantConnect.Lean.Engine.Alphas
         /// </summary>
         protected void ProcessAsynchronousEvents()
         {
-            Log.Trace($"DefaultAlphaHandler.ProcessAsynchronousEvents {Algorithm.Time} Started w/ Insight Steps: {_insightQueue.Count}");
             // step the insight manager forward in time
             InsightQueueItem item;
             while (_insightQueue.TryDequeue(out item))
@@ -267,38 +277,42 @@ namespace QuantConnect.Lean.Engine.Alphas
                 InsightManager.Step(item.FrontierTimeUtc, item.SecurityValues, item.GeneratedInsights);
             }
 
-            // send insight upate messages in a separate thread
-            //Task.Run(() =>
-            //{
-            //    Packet packet;
-            //    while (_messages.TryDequeue(out packet))
-            //    {
-            //        _messagingHandler.Send(packet);
-            //    }
-            //});
+            // push updated insights through messaging handler
+            if (DateTime.UtcNow > _nextMessagingUpdate)
+            {
+                // create new result packet
+                var list = InsightManager.GetUpdatedContexts().Select(context => context.Insight).ToList();
+                if (list.Count > 0)
+                {
+                    _messages.Enqueue(new AlphaResultPacket
+                    {
+                        AlgorithmId = AlgorithmId,
+                        Insights = list
+                    });
+                }
+
+                Packet packet;
+                var packets = new List<Packet>();
+                while (_messages.TryDequeue(out packet))
+                {
+                    packets.Add(packet);
+                }
+
+                if (packets.Count > 0)
+                {
+                    // send insight upate messages in a separate thread
+                    Task.Run(() => packets.ForEach(_messagingHandler.Send));
+                }
+
+                _nextMessagingUpdate = DateTime.UtcNow + MessagingUpdateInterval;
+            }
 
             // persist generated insights to storage in a separate thread
-            //if (DateTime.UtcNow > _nextPersistenceUpdate)
-            //{
-            //    Task.Run(() => StoreInsights());
-            //    _nextPersistenceUpdate = DateTime.UtcNow + PersistenceUpdateInterval;
-            //}
-
-            // push updated insights through messaging handler
-            //if (DateTime.UtcNow > _nextMessagingUpdate)
-            //{
-            //    var list = InsightManager.GetUpdatedContexts().Select(context => context.Insight).ToList();
-            //    if (list.Count > 0)
-            //    {
-            //        _messages.Enqueue(new AlphaResultPacket
-            //        {
-            //            AlgorithmId = AlgorithmId,
-            //            Insights = list
-            //        });
-            //    }
-            //    _nextMessagingUpdate = DateTime.UtcNow + MessagingUpdateInterval;
-            //}
-            Log.Trace($"DefaultAlphaHandler.ProcessAsynchronousEvents Finished. {Algorithm.Time} Remaining Insight Steps: {_insightQueue.Count}");
+            if (DateTime.UtcNow > _nextPersistenceUpdate)
+            {
+                Task.Run(() => StoreInsights());
+                _nextPersistenceUpdate = DateTime.UtcNow + PersistenceUpdateInterval;
+            }
         }
 
         /// <summary>
@@ -306,7 +320,6 @@ namespace QuantConnect.Lean.Engine.Alphas
         /// </summary>
         protected virtual void StoreInsights()
         {
-            Log.Trace("DefaultAlphaHandler.StoreInsights Started");
             // default save all results to disk and don't remove any from memory
             // this will result in one file with all of the insights/results in it
             var insights = InsightManager.AllInsights.OrderBy(insight => insight.GeneratedTimeUtc).ToList();
@@ -316,7 +329,6 @@ namespace QuantConnect.Lean.Engine.Alphas
                 Directory.CreateDirectory(new FileInfo(path).DirectoryName);
                 File.WriteAllText(path, JsonConvert.SerializeObject(insights, Formatting.Indented));
             }
-            Log.Trace("DefaultAlphaHandler.StoreInsights Finished");
         }
 
         /// <summary>

@@ -175,8 +175,8 @@ namespace QuantConnect.Lean.Engine.Alphas
             IsActive = true;
             _cancellationTokenSource = new CancellationTokenSource();
 
-            // run main loop until canceled, will clean out work queues separately
-            while (!_cancellationTokenSource.IsCancellationRequested)
+            // run main loop until canceled insight manager done scoring
+            while (!_cancellationTokenSource.IsCancellationRequested || !_insightQueue.IsEmpty)
             {
                 try
                 {

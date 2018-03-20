@@ -211,14 +211,19 @@ namespace QuantConnect.Lean.Engine.Alphas
                 _insightQueue.ProcessUntilEmpty(item => InsightManager.Step(item.FrontierTimeUtc, item.SecurityValues, item.GeneratedInsights));
 
                 // persist insights at exit
-                StoreInsights();
+                var storeTask = Task.Run(() => StoreInsights());
 
-                // send final insight scoring updates before we exit
-                var insights = InsightManager.GetUpdatedContexts().Select(context => context.Insight).ToList();
-                _messages.Enqueue(new AlphaResultPacket(AlgorithmId, Job.UserId, insights));
+                var messageTask = Task.Run(() =>
+                {
+                    // send final insight scoring updates before we exit
+                    var insights = InsightManager.GetUpdatedContexts().Select(context => context.Insight).ToList();
+                    _messages.Enqueue(new AlphaResultPacket(AlgorithmId, Job.UserId, insights));
 
-                // finish sending packets
-                _messages.ProcessUntilEmpty(packet => _messagingHandler.Send(packet));
+                    // finish sending packets
+                    _messages.ProcessUntilEmpty(packet => _messagingHandler.Send(packet));
+                });
+
+                Task.WaitAll(storeTask, messageTask);
 
                 Log.Trace("DefaultAlphaHandler.Run(): Ending Thread...");
                 IsActive = false;

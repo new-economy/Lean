@@ -163,7 +163,7 @@ namespace QuantConnect.Lean.Engine.Alphas
             }
 
             // check the last snap shot time, we may have already produced a snapshot via OnInsightssGenerated
-            if (_lastSecurityValuesSnapshotTime != Algorithm.UtcTime)
+            if (_lastSecurityValuesSnapshotTime < Algorithm.UtcTime)
             {
                 _insightQueue.Enqueue(new InsightQueueItem(Algorithm.UtcTime, CreateSecurityValuesSnapshot()));
                 if (_insightQueue.Count > 1000)

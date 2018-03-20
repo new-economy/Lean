@@ -125,7 +125,14 @@ namespace QuantConnect.Lean.Engine.Alphas
             InsightManager.AddExtension(_charting);
 
             // when insight is generated, take snapshot of securities and place in queue for insight manager to process on alpha thread
-            algorithm.InsightsGenerated += (algo, collection) => _insightQueue.Enqueue(new InsightQueueItem(collection.DateTimeUtc, CreateSecurityValuesSnapshot(), collection));
+            algorithm.InsightsGenerated += (algo, collection) =>
+            {
+                _insightQueue.Enqueue(new InsightQueueItem(collection.DateTimeUtc, CreateSecurityValuesSnapshot(), collection));
+                if (_insightQueue.Count > 1000)
+                {
+                    Log.Trace($"DefaultAlphaHandler.InsightsGenerated(): Insight queue length {_insightQueue.Count} at {Algorithm.Time}");
+                }
+            };
         }
 
         /// <summary>
@@ -159,6 +166,10 @@ namespace QuantConnect.Lean.Engine.Alphas
             if (_lastSecurityValuesSnapshotTime != Algorithm.UtcTime)
             {
                 _insightQueue.Enqueue(new InsightQueueItem(Algorithm.UtcTime, CreateSecurityValuesSnapshot()));
+                if (_insightQueue.Count > 1000)
+                {
+                    Log.Trace($"DefaultAlphaHandler.ProcessSynchronousEvents(): Insight queue length {_insightQueue.Count} at {Algorithm.Time}");
+                }
             }
         }
 

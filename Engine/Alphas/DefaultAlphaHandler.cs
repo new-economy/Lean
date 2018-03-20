@@ -193,6 +193,8 @@ namespace QuantConnect.Lean.Engine.Alphas
 
             try
             {
+                Log.Trace("DefaultAlphaHandler.Run(): Finalization Started");
+
                 // finish insight scoring analysis
                 _insightQueue.ProcessUntilEmpty(item => InsightManager.Step(item.FrontierTimeUtc, item.SecurityValues, item.GeneratedInsights));
 
@@ -214,6 +216,7 @@ namespace QuantConnect.Lean.Engine.Alphas
                 Log.Error(err, $"DefaultAlphaHandler.Run(): Remaining InsightManager steps: {_insightQueue.Count}");
                 Log.Error(err, $"DefaultAlphaHandler.Run(): Remaining Messages: {_messages.Count}");
                 Log.Error(err, "DefaultAlphaHandler.Run(): Exiting Thread...");
+                throw;
             }
         }
 
@@ -239,6 +242,7 @@ namespace QuantConnect.Lean.Engine.Alphas
         /// </summary>
         protected void ProcessAsynchronousEvents()
         {
+            Log.Trace("DefaultAlphaHandler.ProcessAsynchronousEvents Started w/ Insight Steps: " + _insightQueue.Count);
             // step the insight manager forward in time
             InsightQueueItem item;
             while (_insightQueue.TryDequeue(out item))
@@ -277,6 +281,7 @@ namespace QuantConnect.Lean.Engine.Alphas
             //    }
             //    _nextMessagingUpdate = DateTime.UtcNow + MessagingUpdateInterval;
             //}
+            Log.Trace("DefaultAlphaHandler.ProcessAsynchronousEvents Finished. Remaining Insight Steps: " + _insightQueue.Count);
         }
 
         /// <summary>
@@ -284,6 +289,7 @@ namespace QuantConnect.Lean.Engine.Alphas
         /// </summary>
         protected virtual void StoreInsights()
         {
+            Log.Trace("DefaultAlphaHandler.StoreInsights Started");
             // default save all results to disk and don't remove any from memory
             // this will result in one file with all of the insights/results in it
             var insights = InsightManager.AllInsights.OrderBy(insight => insight.GeneratedTimeUtc).ToList();
@@ -293,6 +299,7 @@ namespace QuantConnect.Lean.Engine.Alphas
                 Directory.CreateDirectory(new FileInfo(path).DirectoryName);
                 File.WriteAllText(path, JsonConvert.SerializeObject(insights, Formatting.Indented));
             }
+            Log.Trace("DefaultAlphaHandler.StoreInsights Finished");
         }
 
         /// <summary>

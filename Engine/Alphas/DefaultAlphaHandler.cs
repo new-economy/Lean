@@ -191,21 +191,30 @@ namespace QuantConnect.Lean.Engine.Alphas
                 Thread.Sleep(1);
             }
 
-            // finish insight scoring analysis
-            _insightQueue.ProcessUntilEmpty(item => InsightManager.Step(item.FrontierTimeUtc, item.SecurityValues, item.GeneratedInsights));
+            try
+            {
+                // finish insight scoring analysis
+                _insightQueue.ProcessUntilEmpty(item => InsightManager.Step(item.FrontierTimeUtc, item.SecurityValues, item.GeneratedInsights));
 
-            // send final insight scoring updates before we exit
-            var insights = InsightManager.GetUpdatedContexts().Select(context => context.Insight).ToList();
-            _messages.Enqueue(new AlphaResultPacket(AlgorithmId, Job.UserId, insights));
+                // send final insight scoring updates before we exit
+                var insights = InsightManager.GetUpdatedContexts().Select(context => context.Insight).ToList();
+                _messages.Enqueue(new AlphaResultPacket(AlgorithmId, Job.UserId, insights));
 
-            // finish sending packets
-            _messages.ProcessUntilEmpty(packet => _messagingHandler.Send(packet));
+                // finish sending packets
+                _messages.ProcessUntilEmpty(packet => _messagingHandler.Send(packet));
 
-            // persist insights at exit
-            StoreInsights();
+                // persist insights at exit
+                StoreInsights();
 
-            Log.Trace("DefaultAlphaHandler.Run(): Ending Thread...");
-            IsActive = false;
+                Log.Trace("DefaultAlphaHandler.Run(): Ending Thread...");
+                IsActive = false;
+            }
+            catch (Exception err)
+            {
+                Log.Error(err, $"DefaultAlphaHandler.Run(): Remaining InsightManager steps: {_insightQueue.Count}");
+                Log.Error(err, $"DefaultAlphaHandler.Run(): Remaining Messages: {_messages.Count}");
+                Log.Error(err, "DefaultAlphaHandler.Run(): Exiting Thread...");
+            }
         }
 
         /// <summary>
@@ -238,36 +247,36 @@ namespace QuantConnect.Lean.Engine.Alphas
             }
 
             // send insight upate messages in a separate thread
-            Task.Run(() =>
-            {
-                Packet packet;
-                while (_messages.TryDequeue(out packet))
-                {
-                    _messagingHandler.Send(packet);
-                }
-            });
+            //Task.Run(() =>
+            //{
+            //    Packet packet;
+            //    while (_messages.TryDequeue(out packet))
+            //    {
+            //        _messagingHandler.Send(packet);
+            //    }
+            //});
 
             // persist generated insights to storage in a separate thread
-            if (DateTime.UtcNow > _nextPersistenceUpdate)
-            {
-                Task.Run(() => StoreInsights());
-                _nextPersistenceUpdate = DateTime.UtcNow + PersistenceUpdateInterval;
-            }
+            //if (DateTime.UtcNow > _nextPersistenceUpdate)
+            //{
+            //    Task.Run(() => StoreInsights());
+            //    _nextPersistenceUpdate = DateTime.UtcNow + PersistenceUpdateInterval;
+            //}
 
             // push updated insights through messaging handler
-            if (DateTime.UtcNow > _nextMessagingUpdate)
-            {
-                var list = InsightManager.GetUpdatedContexts().Select(context => context.Insight).ToList();
-                if (list.Count > 0)
-                {
-                    _messages.Enqueue(new AlphaResultPacket
-                    {
-                        AlgorithmId = AlgorithmId,
-                        Insights = list
-                    });
-                }
-                _nextMessagingUpdate = DateTime.UtcNow + MessagingUpdateInterval;
-            }
+            //if (DateTime.UtcNow > _nextMessagingUpdate)
+            //{
+            //    var list = InsightManager.GetUpdatedContexts().Select(context => context.Insight).ToList();
+            //    if (list.Count > 0)
+            //    {
+            //        _messages.Enqueue(new AlphaResultPacket
+            //        {
+            //            AlgorithmId = AlgorithmId,
+            //            Insights = list
+            //        });
+            //    }
+            //    _nextMessagingUpdate = DateTime.UtcNow + MessagingUpdateInterval;
+            //}
         }
 
         /// <summary>

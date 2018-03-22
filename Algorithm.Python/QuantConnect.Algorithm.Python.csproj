@@ -142,6 +142,7 @@
     <None Include="BasicTemplateCryptoAlgorithm.py" />
     <Content Include="BasicTemplateFrameworkAlgorithm.py" />
     <Content Include="BasicTemplateLibrary.py" />
+    <Content Include="CustomFrameworkModelsAlgorithm.py" />
     <Content Include="CustomIndicatorAlgorithm.py" />
     <Content Include="CustomVolatilityModelAlgorithm.py" />
     <Content Include="HistoryAlgorithm.py" />

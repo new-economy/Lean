@@ -1665,19 +1665,27 @@ namespace QuantConnect.Algorithm
 
         /// <summary>
         /// AddData<typeparam name="T"/> a new user defined data source, requiring only the minimum config options.
-        /// The data is added with a default time zone of NewYork (Eastern Daylight Savings Time)
         /// </summary>
         /// <param name="symbol">Key/Symbol for data</param>
         /// <param name="resolution">Resolution of the Data Required</param>
         /// <param name="timeZone">Specifies the time zone of the raw data</param>
         /// <returns>The new <see cref="Security"/></returns>
         /// <remarks>Generic type T must implement base data</remarks>
-        public Security AddData<T>(string symbol, Resolution resolution, DateTimeZone timeZone)
+        public Security AddData<T>(string symbol, Resolution resolution, string timeZone)
             where T : IBaseData, new()
         {
-            return AddData<T>(symbol, resolution, timeZone, fillDataForward: false, leverage: 1m);
-        }
+            DateTimeZone tz;
+            try
+            {
+                tz = DateTimeZoneProviders.Tzdb[timeZone];
+            }
+            catch (DateTimeZoneNotFoundException)
+            {
+                throw new ArgumentException($"TimeZone with id '{timeZone}' was not found. For a complete list of time zones please visit: http://en.wikipedia.org/wiki/List_of_tz_database_time_zones");
+            }
 
+            return AddData<T>(symbol, resolution, tz, fillDataForward: false, leverage: 1m);
+        }
 
         /// <summary>
         /// AddData<typeparam name="T"/> a new user defined data source, requiring only the minimum config options.
@@ -1689,7 +1697,7 @@ namespace QuantConnect.Algorithm
         /// <param name="leverage">Custom leverage per security</param>
         /// <returns>The new <see cref="Security"/></returns>
         /// <remarks>Generic type T must implement base data</remarks>
-        public Security AddData<T>(string symbol, Resolution resolution, DateTimeZone timeZone, bool fillDataForward, decimal leverage = 1.0m)
+        public Security AddData<T>(string symbol, Resolution resolution, DateTimeZone timeZone, bool fillDataForward = false, decimal leverage = 1.0m)
             where T : IBaseData, new()
         {
             //Add this custom symbol to our market hours database
